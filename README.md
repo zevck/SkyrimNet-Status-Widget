@@ -3,7 +3,11 @@
 A customizable SkyUI HUD widget that displays real-time status information for [SkyrimNet](https://github.com/yourusername/SkyrimNet), including whisper mode and recording indicators.
 
 ## Features
-![Widget on HUD](images/widgetshowcase.jpg)
+
+<p align="center">
+  <img src="images/widgetshowcase.jpg">
+</p>
+<h6 align="center">Left: Whisper mode disabled | Center: Whisper mode enabled | Right: Recording indicator</h6>
 
 ### Current Status Indicators
 - **Whisper Mode**: Shows whether whisper mode is active (hollow mic = off, filled mic = on)
@@ -22,9 +26,9 @@ A customizable SkyUI HUD widget that displays real-time status information for [
 
 ## Requirements
 
-- [SkyrimNet](https://github.com/yourusername/SkyrimNet)
-- [SkyUI](https://www.nexusmods.com/skyrimspecialedition/mods/12604)
 - [SKSE64](https://skse.silverlock.org/)
+- [SkyUI](https://www.nexusmods.com/skyrimspecialedition/mods/12604)
+- [SkyrimNet](https://github.com/yourusername/SkyrimNet)
 
 ## Installation
 
@@ -53,26 +57,6 @@ Access the mod configuration menu (MCM) to customize the widget:
 
 ### Info
 - **Whisper Mode**: Displays current whisper mode status (read-only)
-
-## Usage
-
-Once installed and configured, the widget will automatically display on your HUD:
-
-- **Solid Microphone Icon**: Whisper mode is disabled (normal voice interaction range)
-- **Hollow Microphone Icon**: Whisper mode is enabled (reduced interaction range)
-- **Red Ring**: Recording is active (open mic or push-to-talk being held)
-
-The widget updates automatically based on your chosen update mode.
-
-## Update Modes Explained
-
-### Polling Mode (Recommended)
-- Checks SkyrimNet status periodically (default: every 0.5 seconds)
-- Reliable
-
-### Hotkey Mode (Experimental)
-- Updates when you press configured hotkeys
-- Zero overhead when not pressing keys
 
 ## Known Limitations
 
