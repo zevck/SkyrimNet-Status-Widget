@@ -25,13 +25,12 @@ A customizable SkyUI HUD widget that displays real-time status information for [
 
 ## Requirements
 
-- [SKSE64](https://skse.silverlock.org/)
 - [SkyUI](https://www.nexusmods.com/skyrimspecialedition/mods/12604)
 - [SkyrimNet](https://github.com/yourusername/SkyrimNet)
 
 ## Installation
 
-1. Install all requirements
+1. Install all requirements and their requirements
 2. Install this mod with your mod manager
 
 ## Configuration (MCM)
