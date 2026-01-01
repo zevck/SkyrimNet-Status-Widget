@@ -21,7 +21,7 @@ A customizable SkyUI HUD widget that displays real-time status information for [
 
 ### Update Modes
 - **Polling Mode** (Default): Periodically checks status with configurable interval (0.1-1.0 seconds)
-- **Hotkey Mode**: Updates triggered by hotkey presses (experimental, may have edge cases)
+- **Hotkey Mode**: Updates triggered by hotkey presses (mostly works, may have edge cases)
 
 ## Requirements
 
