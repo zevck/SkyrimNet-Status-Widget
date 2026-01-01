@@ -1,6 +1,6 @@
 # SkyrimNet Status Widget
 
-A customizable SkyUI HUD widget that displays real-time status information for [SkyrimNet](https://github.com/yourusername/SkyrimNet), including whisper mode and recording indicators.
+A customizable SkyUI HUD widget that displays real-time status information for [SkyrimNet](https://github.com/MinLL/SkyrimNet-GamePlugin), including whisper mode and recording indicators.
 
 <p align="center">
   <img src="images/widgetshowcase.jpg">
@@ -26,7 +26,7 @@ A customizable SkyUI HUD widget that displays real-time status information for [
 ## Requirements
 
 - [SkyUI](https://www.nexusmods.com/skyrimspecialedition/mods/12604)
-- [SkyrimNet](https://github.com/yourusername/SkyrimNet)
+- [SkyrimNet](https://github.com/MinLL/SkyrimNet-GamePlugin)
 
 ## Installation
 
