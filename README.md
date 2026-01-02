@@ -48,7 +48,7 @@ Access the mod MCM (SkyrimNet Status Widget) to customize the widget:
 
 ### Position & Layout
 - **Position Preset**: Quick position presets (Bottom Right, Bottom Left, Top Right, Top Left, User Defined)
-- **X Position / Y Position**: Manual positioning (0-1280 / 0-720 for 720p)
+- **X Position / Y Position**: Manual positioning (0-1280 / 0-720)
 - **Horizontal/Vertical Anchor**: Anchor widget to screen edges (Left/Middle/Right, Top/Middle/Bottom)
 
 ### Info
