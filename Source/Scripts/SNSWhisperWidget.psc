@@ -490,6 +490,25 @@ Event OnWidgetReset()
     EndIf
 EndEvent
 
+; Override to set custom modes before parent calls UpdateWidgetModes()
+Event OnWidgetLoad()
+    ; Set modes to include DialogueMode BEFORE parent sets them
+    string[] modesArray = new string[7]
+    modesArray[0] = "All"
+    modesArray[1] = "StealthMode"
+    modesArray[2] = "Favor"
+    modesArray[3] = "Swimming"
+    modesArray[4] = "HorseMode"
+    modesArray[5] = "WarHorseMode"
+    modesArray[6] = "DialogueMode"
+    Modes = modesArray
+    
+    Debug.Trace("SNSWhisperWidget: Setting modes with DialogueMode, count: " + Modes.Length)
+    
+    ; Now let parent handle the rest (will call UpdateWidgetModes with our modes)
+    Parent.OnWidgetLoad()
+EndEvent
+
 ;===========================================
 ; HOTKEY MANAGEMENT
 ;===========================================
