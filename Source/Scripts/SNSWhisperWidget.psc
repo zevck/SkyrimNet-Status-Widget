@@ -14,9 +14,11 @@ Quest Property SkyrimNetLibraryQuest Auto
 ; Previous state values to prevent redundant UI updates
 Bool lastWhisperState = False      ; Last known whisper mode state
 Bool lastRecordingState = False    ; Last known recording/open mic state
+Bool lastGlobalAIState = True      ; Last known global AI state
 
 ; Hotkey management
 Int whisperHotkey = -1              ; Currently registered hotkey code (-1 = none)
+Int globalAIHotkey = -1             ; Global AI toggle hotkey (C++ mode only, -1 = none)
 Bool usePapyrusHotkeys = False     ; True = Papyrus hotkeys, False = C++ hotkeys
 
 ; Recording hotkey tracking (for hotkey-only mode)
@@ -35,7 +37,14 @@ Bool voiceDirectInputPressed = False
 
 ; Temporary post-reload polling (for hotkey mode)
 Int tempPollCount = 0               ; Counter for temporary polls after reload
-Int maxTempPolls = 6                ; Poll 6 times (3 seconds at 0.5s interval) after reload
+Int maxTempPolls = 6                ; Poll 6 times (18 seconds at 3s interval) after reload
+Int maxTimeoutPolls = 20            ; Maximum 20 polls (60 seconds at 3s) before timeout
+Bool tempPollingTimedOut = False    ; Flag if temp polling exceeded timeout
+Float fTempPollInterval = 3.0       ; Temp polling interval (3 seconds to reduce init load)
+
+; Burst polling when hotkey pressed (for hotkey mode)
+Int burstPollCount = 0              ; Counter for burst polls after key press
+Int maxBurstPolls = 4               ; Poll 4 times at 0.1s intervals (covers 0.4s window)
 
 ;===========================================
 ; SETTINGS (configurable via MCM)
@@ -46,7 +55,7 @@ Int widgetSize = 100                ; Scale percentage (50-200, default 100)
 Int widgetOpacity = 100             ; Opacity percentage (0-100, default 100)
 Bool bShowRecordingIndicator = True  ; Enable recording/open mic indicator
 Bool bHideWhenInactive = False      ; Auto-hide when whisper OFF and not recording
-Bool bUseHotkeyMode = False         ; True = hotkey-only updates, False = polling mode (default polling)
+Bool bUseHotkeyMode = True          ; True = hotkey-only updates (DEFAULT), False = polling mode
 Float fPollInterval = 0.5           ; Polling interval (seconds) when not using hotkey mode
 
 ; Master visibility toggle property
@@ -59,7 +68,8 @@ Bool Property Visible
     Function Set(Bool a_val)
         widgetVisible = a_val
         If (Ready)
-            UI.InvokeBool(HUD_MENU, WidgetRoot + ".setVisible", widgetVisible)
+            ; Force full status update to ensure proper visibility state
+            UpdateStatus(true)
         EndIf
     EndFunction
 EndProperty
@@ -174,6 +184,7 @@ Bool Property UseHotkeyMode
                 EndIf
             Else
                 ; Switching to polling mode
+                burstPollCount = maxBurstPolls  ; Stop any burst polling
                 If bShowRecordingIndicator
                     UnregisterRecordingHotkeys()  ; Unregister recording hotkeys
                     RegisterForSingleUpdate(fPollInterval)  ; Start polling
@@ -211,6 +222,8 @@ EndProperty
 ;===========================================
 
 Event OnInit()
+    Debug.Trace("[SNSWhisperWidget] OnInit() called")
+    
     ; Set default position BEFORE calling Parent.OnInit()
     ; This ensures correct position on first load (Bottom Right corner)
     X = 1272.0          ; Horizontal position
@@ -218,13 +231,19 @@ Event OnInit()
     HAnchor = "right"   ; Anchor to right edge
     VAnchor = "bottom"  ; Anchor to bottom edge
     
+    Debug.Trace("[SNSWhisperWidget] Calling Parent.OnInit()")
     Parent.OnInit()
+    Debug.Trace("[SNSWhisperWidget] OnInit() complete, Ready=" + Ready)
 EndEvent
 
 ; Called when player loads a save game
 ; This is the correct place to query SkyrimNet API (after game state is loaded)
 Event OnGameReload()
+    Debug.Trace("[SNSWhisperWidget] OnGameReload() called, Ready=" + Ready)
+    
     Parent.OnGameReload()
+    
+    Debug.Trace("[SNSWhisperWidget] OnGameReload() complete, Ready=" + Ready)
     
     ; Check if any recording key was held during reload
     Bool keyWasHeld = recordSpeechPressed || voiceThoughtPressed || voiceDialoguePressed || voiceDirectInputPressed
@@ -242,11 +261,6 @@ Event OnGameReload()
     ; Re-register recording hotkeys if in hotkey mode
     If bShowRecordingIndicator && bUseHotkeyMode
         LoadRecordingHotkeys()
-        
-        ; Always do brief polling after reload to catch any PTT edge cases
-        ; Only polls for 3 seconds to minimize overhead
-        tempPollCount = 0
-        RegisterForSingleUpdate(fPollInterval)
     EndIf
 EndEvent
 
@@ -460,38 +474,64 @@ EndFunction
 ; Called when widget is reset (UI reload, etc.)
 ; Sets up initial UI state and event registrations
 Event OnWidgetReset()
+    Debug.Trace("[SNSWhisperWidget] OnWidgetReset() called, Ready=" + Ready)
+    
+    ; Reset temp polling counter (but NOT burstPollCount - that's only for hotkeys)
+    tempPollCount = 0
+    
     Parent.OnWidgetReset()
     
     ; Apply saved settings to the Flash widget
     If (Ready)
-        UI.InvokeBool(HUD_MENU, WidgetRoot + ".setVisible", widgetVisible)
+        Debug.Trace("[SNSWhisperWidget] Applying widget settings")
         UI.SetFloat(HUD_MENU, WidgetRoot + "._xscale", widgetSize as Float)
         UI.SetFloat(HUD_MENU, WidgetRoot + "._yscale", widgetSize as Float)
         UI.SetInt(HUD_MENU, WidgetRoot + "._alpha", widgetOpacity)
         
-        ; Whisper mode always resets to disabled on reload (SkyrimNet behavior)
-        lastWhisperState = False
-        UI.InvokeBool(HUD_MENU, WidgetRoot + ".setWhisperMode", false)
+        ; Set initial visibility (UpdateStatus will apply global AI and hide-when-inactive logic)
+        UI.InvokeBool(HUD_MENU, WidgetRoot + ".setVisible", widgetVisible)
+        Debug.Trace("[SNSWhisperWidget] Initial visibility set to: " + widgetVisible)
         
-        ; Recording state persists - restore it
-        UI.InvokeBool(HUD_MENU, WidgetRoot + ".setRecording", lastRecordingState)
+        ; Don't restore cached states - whisper mode resets to OFF on reload
+        ; SkyrimNet always resets whisper mode to disabled, so cached state would be wrong
+        ; Forced updates will set correct state within 1-2 seconds
+    Else
+        Debug.Trace("[SNSWhisperWidget] WARNING: Ready=False in OnWidgetReset!")
     EndIf
     
-    ; Listen for load screen closing to refresh state after load
+    ; Register for common menu types to catch state changes in menus
+    ; This catches edge cases like typing hotkey in mod menu search fields
     RegisterForMenu("LoadingMenu")
+    RegisterForMenu("Dialogue Menu")
+    RegisterForMenu("ContainerMenu")
+    RegisterForMenu("InventoryMenu")
+    RegisterForMenu("MagicMenu")
+    RegisterForMenu("BarterMenu")
+    RegisterForMenu("GiftMenu")
+    RegisterForMenu("JournalMenu")
+    RegisterForMenu("MapMenu")
+    RegisterForMenu("FavoritesMenu")
+    RegisterForMenu("Console")
+    RegisterForMenu("CustomMenu")  ; Many SKSE mods use this
     
-    ; Start polling or register hotkeys based on mode
-    If bShowRecordingIndicator
-        If bUseHotkeyMode
-            LoadRecordingHotkeys()  ; Register recording hotkeys
-        Else
-            RegisterForSingleUpdate(fPollInterval)  ; Start polling
-        EndIf
+    ; Register recording hotkeys if needed
+    If bShowRecordingIndicator && bUseHotkeyMode
+        LoadRecordingHotkeys()
     EndIf
+    
+    ; Always start initial polling after reset to establish state
+    ; In hotkey mode, this will poll a few times then stop (controlled by tempPollCount)
+    ; In polling mode, this will poll continuously
+    If bUseHotkeyMode
+        tempPollCount = 0  ; Reset temp poll counter
+    EndIf
+    RegisterForSingleUpdate(fTempPollInterval)
 EndEvent
 
 ; Override to set custom modes before parent calls UpdateWidgetModes()
 Event OnWidgetLoad()
+    Debug.Trace("[SNSWhisperWidget] OnWidgetLoad() called, Ready=" + Ready)
+    
     ; Set modes to include DialogueMode BEFORE parent sets them
     string[] modesArray = new string[7]
     modesArray[0] = "All"
@@ -502,11 +542,10 @@ Event OnWidgetLoad()
     modesArray[5] = "WarHorseMode"
     modesArray[6] = "DialogueMode"
     Modes = modesArray
-    
-    Debug.Trace("SNSWhisperWidget: Setting modes with DialogueMode, count: " + Modes.Length)
-    
+        
     ; Now let parent handle the rest (will call UpdateWidgetModes with our modes)
     Parent.OnWidgetLoad()
+    Debug.Trace("[SNSWhisperWidget] OnWidgetLoad() complete, Ready=" + Ready)
 EndEvent
 
 ;===========================================
@@ -620,6 +659,7 @@ Function LoadHotkeyFromConfig()
     usePapyrusHotkeys = !SkyrimNetApi.IsCppHotkeysEnabled()
     
     Int newHotkey = -1
+    Int newGlobalAIHotkey = -1
     
     If usePapyrusHotkeys
         ; Papyrus system: Read hotkey directly from quest property
@@ -627,15 +667,20 @@ Function LoadHotkeyFromConfig()
             skynet_Library libraryScript = SkyrimNetLibraryQuest as skynet_Library
             If libraryScript
                 newHotkey = libraryScript.hotkeyToggleWhisperMode
+                ; Global AI hotkey only available in Papyrus mode if exposed
             EndIf
         EndIf
     Else
         ; C++ system: Read VK code from config and convert to Skyrim code
         Int directInputKey = SkyrimNetApi.GetConfigInt("hotkey", "toggleWhisperMode", -1)
         newHotkey = ConvertVKInputToSkyrim(directInputKey)
+        
+        ; Also load global AI hotkey (C++ only)
+        Int globalAIKey = SkyrimNetApi.GetConfigInt("hotkey", "toggleGlobalAI", -1)
+        newGlobalAIHotkey = ConvertVKInputToSkyrim(globalAIKey)
     EndIf
     
-    ; Re-register hotkey if it changed
+    ; Re-register whisper hotkey if it changed
     If newHotkey != whisperHotkey
         ; Unregister old hotkey
         If whisperHotkey != -1
@@ -648,6 +693,20 @@ Function LoadHotkeyFromConfig()
             RegisterForKey(whisperHotkey)
         EndIf
     EndIf
+    
+    ; Re-register global AI hotkey if it changed
+    If newGlobalAIHotkey != globalAIHotkey
+        ; Unregister old hotkey
+        If globalAIHotkey != -1
+            UnregisterForKey(globalAIHotkey)
+        EndIf
+        
+        ; Register new hotkey
+        globalAIHotkey = newGlobalAIHotkey
+        If globalAIHotkey != -1
+            RegisterForKey(globalAIHotkey)
+        EndIf
+    EndIf
 EndFunction
 
 ;===========================================
@@ -657,12 +716,20 @@ EndFunction
 ; Handles hotkey press for instant widget update
 ; Called when registered hotkey is pressed
 Event OnKeyDown(Int keyCode)
-    If !Utility.IsInMenuMode()
-        If keyCode == whisperHotkey
-            ; Wait for SkyrimNet to process the hotkey and update config
-            Utility.Wait(0.3)
-            ; Fast update - only checks whisper mode (not recording)
-            UpdateWhisperMode()
+    If keyCode == whisperHotkey
+        ; Start burst polling to catch config update
+        ; Polls at 0.1s intervals for up to 0.4s total (4 polls)
+        ; Process even in menu mode (e.g., typing in search fields)
+        burstPollCount = 0
+        tempPollCount = maxTempPolls  ; Stop any temp polling
+        RegisterForSingleUpdate(0.1)
+        
+    ElseIf !Utility.IsInMenuMode()
+        If keyCode == globalAIHotkey && globalAIHotkey != -1
+            ; Global AI toggled (C++ mode only): start burst polling
+            burstPollCount = 0
+            tempPollCount = maxTempPolls  ; Stop any temp polling
+            RegisterForSingleUpdate(0.1)
             
         ElseIf bUseHotkeyMode && bShowRecordingIndicator && IsRecordingHotkey(keyCode)
             ; Track which key is pressed
@@ -678,9 +745,11 @@ Event OnKeyDown(Int keyCode)
                 voiceDirectInputPressed = True
             EndIf
             
-            ; Recording hotkey pressed (in hotkey mode)
-            Utility.Wait(0.1)
-            UpdateRecordingState()
+            ; Recording hotkey: start burst polling to catch recording state
+            ; API may take a moment to register the recording
+            burstPollCount = 0
+            tempPollCount = maxTempPolls  ; Stop any temp polling
+            RegisterForSingleUpdate(0.1)
         EndIf
     EndIf
 EndEvent
@@ -703,9 +772,10 @@ Event OnKeyUp(Int keyCode, Float holdTime)
                 voiceDirectInputPressed = False
             EndIf
             
-            ; Recording hotkey released
-            Utility.Wait(0.1)
-            UpdateRecordingState()
+            ; Recording hotkey released: start burst polling to catch state change
+            burstPollCount = 0
+            tempPollCount = maxTempPolls  ; Stop any temp polling
+            RegisterForSingleUpdate(0.1)
         EndIf
     EndIf
 EndEvent
@@ -718,34 +788,66 @@ Bool Function IsRecordingHotkey(Int keyCode)
 EndFunction
 
 ; Called when a menu closes
-; We use this to detect when loading screen finishes
+; Catches edge cases where hotkey was typed in text fields (OnKeyDown doesn't fire)
 Event OnMenuClose(String menuName)
-    ; OnWidgetReset already handles state restoration correctly
-    ; No need to update anything here
+    ; Force sync check to catch any state changes that happened in menu
+    ; This is event-driven (not polling) and only fires when menus close
+    If Ready
+        UpdateStatus(true)
+    EndIf
 EndEvent
 
 ; Periodic update event for polling mode
 ; Checks both whisper and recording state
 ; Only active when ShowRecordingIndicator is enabled AND in polling mode
 ; Also runs temporarily after reload in hotkey mode to catch push-to-talk state
+; Also runs burst polling after whisper hotkey press
 Event OnUpdate()
-    If !bUseHotkeyMode
-        ; Normal polling mode
-        UpdateStatus()
-        
-        ; Schedule next poll if still in polling mode
-        If bShowRecordingIndicator && !bUseHotkeyMode
-            RegisterForSingleUpdate(fPollInterval)
+    ; Priority 1: Burst polling after whisper hotkey press
+    If burstPollCount < maxBurstPolls
+        UpdateStatus()  ; Check both whisper AND recording state
+        burstPollCount += 1
+        If burstPollCount < maxBurstPolls
+            RegisterForSingleUpdate(0.1)  ; Quick 0.1s interval for burst
         EndIf
+        Return
+    EndIf
+    
+    ; Priority 2: Normal polling or temp post-reload polling
+    If !bUseHotkeyMode
+        ; Polling mode: continuous updates
+        ; Force update on first few polls after reset to handle SkyrimNet initialization delay
+        Bool forceFirst = (tempPollCount < 3)
+        UpdateStatus(forceFirst)
+        If tempPollCount < 10
+            tempPollCount += 1
+        EndIf
+        RegisterForSingleUpdate(fPollInterval)
     Else
-        ; Hotkey mode: temporary post-reload polling
-        ; Only active if a recording key was held during reload
-        If tempPollCount < maxTempPolls
+        ; Hotkey mode: temporary post-reload polling only
+        ; Keep polling until BOTH poll count reached AND widget is Ready
+        ; This prevents stopping temp polling before SWF has finished loading
+        ; But timeout after 1 minute to prevent infinite polling
+        If (tempPollCount < maxTempPolls || !Ready) && tempPollCount < maxTimeoutPolls
             UpdateStatus()
             tempPollCount += 1
-            RegisterForSingleUpdate(fPollInterval)
+            RegisterForSingleUpdate(fTempPollInterval)
+            
+            ; Log if we're extending polling due to Ready=False
+            If tempPollCount >= maxTempPolls && !Ready
+                Debug.Trace("[SNSWhisperWidget] Extending temp polling, Ready=False (poll " + tempPollCount + ")")
+            EndIf
+        Else
+            ; Check if we timed out
+            If !Ready && tempPollCount >= maxTimeoutPolls
+                Debug.Trace("[SNSWhisperWidget] ERROR: Temp polling timed out after " + tempPollCount + " polls, Ready=False!")
+                tempPollingTimedOut = True
+            Else
+                ; Temp polling complete
+                Debug.Trace("[SNSWhisperWidget] Temp polling complete after " + tempPollCount + " polls, Ready=True")
+            EndIf
         EndIf
-        ; After maxTempPolls, stop polling (return to hotkey-only mode)
+        ; After temp polls complete, stop all polling - everything is hotkey-driven
     EndIf
 EndEvent
 
@@ -753,10 +855,30 @@ EndEvent
 ; STATE UPDATE FUNCTIONS
 ;===========================================
 
+; Lightweight check for global AI state
+; Used in hotkey mode to ensure widget hides when SkyrimNet is disabled
+; without the overhead of full state polling
+Function CheckGlobalAIState()
+    Bool isGlobalAIEnabled = SkyrimNetApi.GetConfigBool("game", "general.globalAIEnabled", True)
+    
+    If !isGlobalAIEnabled
+        ; Global AI disabled - hide widget
+        If Ready
+            UI.InvokeBool(HUD_MENU, WidgetRoot + ".setVisible", false)
+        EndIf
+    Else
+        ; Global AI enabled - do full update to restore state
+        UpdateStatus(true)
+    EndIf
+EndFunction
+
 ; Full status update - checks both whisper mode AND recording state
 ; Called on game load and when settings change
 ; More expensive than UpdateWhisperMode() due to checking both states
 Function UpdateStatus(Bool forceUpdate = false)
+    ; Check if SkyrimNet global AI is enabled
+    Bool isGlobalAIEnabled = SkyrimNetApi.GetConfigBool("game", "general.globalAIEnabled", True)
+    
     ; Query current states from SkyrimNet
     Bool isWhisperOn = IsWhisperModeEnabled()
     Bool isRecording = False
@@ -766,37 +888,53 @@ Function UpdateStatus(Bool forceUpdate = false)
         isRecording = SkyrimNetApi.IsRecordingInput()
     EndIf
     
-    ; Apply auto-hide logic if enabled
-    Bool shouldBeVisible = widgetVisible
-    If bHideWhenInactive && !isWhisperOn && !isRecording
-        shouldBeVisible = false  ; Hide when inactive
+    ; Calculate visibility: start with base visibility, apply global AI and auto-hide logic
+    Bool shouldBeVisible = widgetVisible && isGlobalAIEnabled
+    If shouldBeVisible && bHideWhenInactive
+        If bShowRecordingIndicator
+            ; Consider both whisper and recording for auto-hide
+            If !isWhisperOn && !isRecording
+                shouldBeVisible = false
+            EndIf
+        Else
+            ; Only consider whisper for auto-hide
+            If !isWhisperOn
+                shouldBeVisible = false
+            EndIf
+        EndIf
     EndIf
     
     ; When forcing update, skip change detection entirely
     If forceUpdate
-        If (Ready)
-            ; Always update UI to match actual state
-            UI.InvokeBool(HUD_MENU, WidgetRoot + ".setWhisperMode", isWhisperOn)
-            UI.InvokeBool(HUD_MENU, WidgetRoot + ".setRecording", isRecording)
-            UI.InvokeBool(HUD_MENU, WidgetRoot + ".setVisible", shouldBeVisible)
-            
-            ; Update cached states
-            lastWhisperState = isWhisperOn
-            lastRecordingState = isRecording
-        EndIf
+        lastGlobalAIState = isGlobalAIEnabled
+        ; Always update UI to match actual state
+        ; Only show recording if the feature is enabled
+        Bool showRecording = isRecording && bShowRecordingIndicator
+        UI.InvokeBool(HUD_MENU, WidgetRoot + ".setWhisperMode", isWhisperOn)
+        UI.InvokeBool(HUD_MENU, WidgetRoot + ".setRecording", showRecording)
+        UI.InvokeBool(HUD_MENU, WidgetRoot + ".setVisible", shouldBeVisible)
+        
+        ; Update cached states
+        lastWhisperState = isWhisperOn
+        lastRecordingState = isRecording
         Return
     EndIf
     
     ; Normal operation: detect state changes
-    Bool stateChanged = (isWhisperOn != lastWhisperState || isRecording != lastRecordingState)
+    Bool globalAIChanged = (isGlobalAIEnabled != lastGlobalAIState)
+    lastGlobalAIState = isGlobalAIEnabled
+    
+    Bool stateChanged = globalAIChanged || (isWhisperOn != lastWhisperState || isRecording != lastRecordingState)
     Bool becomingVisible = (!lastWhisperState && !lastRecordingState) && (isWhisperOn || isRecording)
     
     ; Update UI only if state changed or becoming visible
     If stateChanged || becomingVisible
         If (Ready)
             ; Send updates to Flash widget
+            ; Only show recording if the feature is enabled
+            Bool showRecording = isRecording && bShowRecordingIndicator
             UI.InvokeBool(HUD_MENU, WidgetRoot + ".setWhisperMode", isWhisperOn)
-            UI.InvokeBool(HUD_MENU, WidgetRoot + ".setRecording", isRecording)
+            UI.InvokeBool(HUD_MENU, WidgetRoot + ".setRecording", showRecording)
             UI.InvokeBool(HUD_MENU, WidgetRoot + ".setVisible", shouldBeVisible)
             
             ; Only update cached states if UI update succeeded
@@ -810,6 +948,12 @@ EndFunction
 ; Skips recording check for instant response
 ; Called from OnKeyDown event handler
 Function UpdateWhisperMode()
+    ; Early exit if global AI is disabled
+    Bool isGlobalAIEnabled = SkyrimNetApi.GetConfigBool("game", "general.globalAIEnabled", True)
+    If !isGlobalAIEnabled
+        Return
+    EndIf
+    
     Bool isWhisperOn = IsWhisperModeEnabled()
     
     ; Update only if whisper state changed
@@ -835,6 +979,12 @@ EndFunction
 Function UpdateRecordingState()
     ; Early exit if feature disabled
     If !bShowRecordingIndicator
+        Return
+    EndIf
+    
+    ; Early exit if global AI is disabled
+    Bool isGlobalAIEnabled = SkyrimNetApi.GetConfigBool("game", "general.globalAIEnabled", True)
+    If !isGlobalAIEnabled
         Return
     EndIf
     
@@ -870,14 +1020,11 @@ Bool Function IsWhisperModeEnabled()
     ; Query SkyrimNet config for distance values
     Float currentDistance = SkyrimNetApi.GetConfigFloat("game", "interaction.maxDistance", 1000.0)
     Float whisperDistance = SkyrimNetApi.GetConfigFloat("game", "interaction.whisperMaxDistance", 200.0)
-    
+        
     ; If current distance is at or below whisper threshold, it's whisper mode
     ; Any distance above whisper threshold is considered normal mode
-    If currentDistance <= whisperDistance
-        Return true
-    Else
-        Return false
-    EndIf
+    Bool isWhisper = (currentDistance <= whisperDistance)
+    Return isWhisper
 EndFunction
 
 ;===========================================
