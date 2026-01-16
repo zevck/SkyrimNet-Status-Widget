@@ -1,6 +1,6 @@
 # SkyrimNet Status Widget
 
-Customizable SkyUI HUD widgets that display real-time status information for [SkyrimNet](https://github.com/MinLL/SkyrimNet-GamePlugin), including whisper mode, recording indicators, GameMaster mode, and continuous scene mode.
+Customizable SkyUI HUD widgets that display real-time status information for [SkyrimNet](https://github.com/MinLL/SkyrimNet-GamePlugin), including whisper mode, recording indicators, GameMaster mode, and continuous mode.
 <h6 align="center">Left: GameMaster enabled | Center: GameMaster disabled | Right: Continuous mode enabled</h6>
 <p align="center">
   <img src="images/widgetshowcase.jpg">
@@ -11,17 +11,17 @@ Customizable SkyUI HUD widgets that display real-time status information for [Sk
 
 ### Two Widgets
 - **Whisper Widget**: Displays whisper mode and voice recording status
-- **GM Widget**: Shows GameMaster mode and continuous scene mode status
+- **GM Widget**: Shows GameMaster mode and continuous mode status
 
 ### Status Indicators
 - **Whisper Mode**: Shows whether whisper mode is active (filled mic = off, hollow mic = on)
 - **Recording Indicator**: Displays when voice recording is active (open mic or push-to-talk)
 - **GameMaster Mode**: Indicates when the GM agent is enabled
-- **Continuous Mode**: Shows when continuous scene mode is active (NPCs keep talking autonomously)
+- **Continuous Mode**: Shows when continuous mode is active
 
 ### Customization Options
 - **Positioning**: Choose from 9 presets (Top Left/Center/Right, Center Left/Center/Right, Bottom Left/Center/Right) or custom positioning
-- **Relative Positioning**: GM widget can be positioned relative to whisper widget (auto-adjusts for top-anchored positions)
+- **Relative Positioning**: GM widget can be positioned relative to whisper widget
 - **Size**: Adjustable from 50% to 200%
 - **Opacity**: Control transparency from 0% (invisible) to 100% (fully opaque)
 - **Auto-hide**: Optionally hide widgets when inactive
@@ -29,7 +29,7 @@ Customizable SkyUI HUD widgets that display real-time status information for [Sk
 - **Global AI Detection**: Widgets automatically hide when SkyrimNet's global AI is disabled
 
 ### Update Modes
-- **Hotkey Mode** (Default): Event-driven updates triggered by hotkey presses with brief polling on load (zero continuous background polling)
+- **Hotkey Mode** (Default): Event-driven updates triggered by hotkey presses
 - **Polling Mode**: Periodically checks status with configurable interval (0.1-1.0 seconds)
 
 ## Requirements
@@ -50,8 +50,7 @@ Access the mod MCM (SkyrimNet Status Widget) to customize both widgets. Three pa
 - **Hide All Widgets**: Master toggle to hide both widgets
 - **Use Hotkey Mode**: Enable event-driven updates (default, zero continuous polling)
 - **Poll Interval**: How often to check status in polling mode (0.1-1.0 seconds)
-- **Refresh**: Force immediate update of both widgets
-- **Global AI Status**: Displays current SkyrimNet AI state (ON/OFF)
+- **Refresh**: Force immediate update of both widgets and hotkeys
 
 ### Whisper Widget Settings
 - **Show Widget**: Toggle whisper widget visibility
@@ -78,9 +77,8 @@ Access the mod MCM (SkyrimNet Status Widget) to customize both widgets. Three pa
 
 ## Known Limitations
 
-- Hotkey mode requires reload to update keybind changes
-- Recording indicator may briefly show incorrect state in rare edge cases (updates quickly via burst polling)
-- Custom SKSE menus may not trigger menu close handler for state sync
+- Hotkey mode requires reload to update keybind changes (can now be refreshed in MCM)
+- Recording indicator may briefly show incorrect state in rare edge cases
 
 ## Credits
 
