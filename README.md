@@ -1,9 +1,9 @@
 # SkyrimNet Status Widget
 
-Customizable SkyUI HUD widgets that display real-time status information for [SkyrimNet](https://github.com/MinLL/SkyrimNet-GamePlugin), including whisper mode, recording indicators, GameMaster mode, and continuous mode.
+Customizable SkyUI HUD widgets that display real-time status information for [SkyrimNet](https://github.com/MinLL/SkyrimNet-GamePlugin), including whisper mode, recording indicators, GameMaster agent, and continuous mode.
 <h6 align="center">Left: GameMaster enabled | Center: GameMaster disabled | Right: Continuous mode enabled</h6>
 <p align="center">
-  <img src="images/widgetshowcase.jpg">
+  <img src="images/widgetshowcase.png">
 </p>
 <h6 align="center">Left: Whisper mode disabled | Center: Whisper mode enabled | Right: Recording indicator</h6>
 
@@ -11,13 +11,14 @@ Customizable SkyUI HUD widgets that display real-time status information for [Sk
 
 ### Two Widgets
 - **Whisper Widget**: Displays whisper mode and voice recording status
-- **GM Widget**: Shows GameMaster mode and continuous mode status
+- **GM Widget**: Shows GameMaster agent and continuous mode status
 
 ### Status Indicators
 - **Whisper Mode**: Shows whether whisper mode is active (filled mic = off, hollow mic = on)
 - **Recording Indicator**: Displays when voice recording is active (open mic or push-to-talk)
-- **GameMaster Mode**: Indicates when the GM agent is enabled
+- **GameMaster Agent**: Indicates when the GM agent is enabled
 - **Continuous Mode**: Shows when continuous mode is active
+- **Global AI Detection**: Widgets automatically hide when SkyrimNet's global AI is disabled
 
 ### Customization Options
 - **Positioning**: Choose from 9 presets (Top Left/Center/Right, Center Left/Center/Right, Bottom Left/Center/Right) or custom positioning
@@ -26,7 +27,6 @@ Customizable SkyUI HUD widgets that display real-time status information for [Sk
 - **Opacity**: Control transparency from 0% (invisible) to 100% (fully opaque)
 - **Auto-hide**: Optionally hide widgets when inactive
 - **Only Show When Continuous**: GM widget can be set to only appear when continuous mode is active
-- **Global AI Detection**: Widgets automatically hide when SkyrimNet's global AI is disabled
 
 ### Update Modes
 - **Hotkey Mode** (Default): Event-driven updates triggered by hotkey presses
