@@ -32,6 +32,12 @@ Customizable SkyUI HUD widgets that display real-time status information for [Sk
 - **Hotkey Mode** (Default): Event-driven updates triggered by hotkey presses
 - **Polling Mode**: Periodically checks status with configurable interval (0.1-1.0 seconds)
 
+### FOMOD with skin selection *NEW*
+New FOMOD with 4 different different skins, including the default and 3 new skins using assets from EdgeUI, Norden UI, or Oathvein UI.
+<p align="center">
+  <img src="images/widgetskinspreview.png">
+</p>
+
 ## Requirements
 
 - [SkyUI](https://www.nexusmods.com/skyrimspecialedition/mods/12604)
@@ -85,3 +91,5 @@ Access the mod MCM (SkyrimNet Status Widget) to customize both widgets. Three pa
 Special thanks to:
 - SkyrimNet development team
 - SkyUI team
+- [nithog](https://www.nexusmods.com/profile/nithog) for Oathvein and Norden UI assets
+- [EugeneUI](https://www.nexusmods.com/profile/EugeneUI) for EdgeUI assets

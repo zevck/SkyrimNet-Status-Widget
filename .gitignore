@@ -9,3 +9,28 @@ SkyrimNetStatusWidget-v1.0.1.zip
 SkyrimNetStatusWidget-v1.1.zip
 action scripts/gm widget.txt
 action scripts/whisper widget.txt
+SkyrimNetStatusWidget-v1.1.1.zip
+SkyrimNetStatusWidget-v1.1.1/Source/Scripts/SNSWidgetMCM.psc
+SkyrimNetStatusWidget-v1.1.1/Source/Scripts/SNSWhisperWidget.psc
+SkyrimNetStatusWidget-v1.1.1/Source/Scripts/SNSGMWidget.psc
+SkyrimNetStatusWidget-v1.1.1/Source/Scripts/SNSGlobalAIController.psc
+SkyrimNetStatusWidget-v1.1.1/SkyrimNet Status Widget.esp
+SkyrimNetStatusWidget-v1.1.1/Scripts/SNSWidgetMCM.pex
+SkyrimNetStatusWidget-v1.1.1/Scripts/SNSWhisperWidget.pex
+SkyrimNetStatusWidget-v1.1.1/Scripts/SNSGMWidget.pex
+SkyrimNetStatusWidget-v1.1.1/Scripts/SNSGlobalAIController.pex
+SkyrimNetStatusWidget-v1.1.1/Oathvein/interface/exported/widgets/SNSWidget.swf
+SkyrimNetStatusWidget-v1.1.1/Oathvein/interface/exported/widgets/SNSGMWidget.swf
+SkyrimNetStatusWidget-v1.1.1/Norden/interface/exported/widgets/SNSWidget.swf
+SkyrimNetStatusWidget-v1.1.1/Norden/interface/exported/widgets/SNSGMWidget.swf
+SkyrimNetStatusWidget-v1.1.1/fomod/ModuleConfig.xml
+SkyrimNetStatusWidget-v1.1.1/fomod/info.xml
+SkyrimNetStatusWidget-v1.1.1/fomod/images/oathveinpreview.png
+SkyrimNetStatusWidget-v1.1.1/fomod/images/nordenpreview.png
+SkyrimNetStatusWidget-v1.1.1/fomod/images/edgepreview.png
+SkyrimNetStatusWidget-v1.1.1/fomod/images/defaultpreview.png
+SkyrimNetStatusWidget-v1.1.1/Edge/interface/exported/widgets/SNSWidget.swf
+SkyrimNetStatusWidget-v1.1.1/Edge/interface/exported/widgets/SNSGMWidget.swf
+SkyrimNetStatusWidget-v1.1.1/Default/interface/exported/widgets/SNSWidget.swf
+SkyrimNetStatusWidget-v1.1.1/Default/interface/exported/widgets/SNSGMWidget.swf
+meta.ini
