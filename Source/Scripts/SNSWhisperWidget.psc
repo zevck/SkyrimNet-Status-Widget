@@ -18,8 +18,16 @@ Bool lastGlobalAIState = True      ; Last known global AI state
 
 ; Hotkey management
 Int whisperHotkey = -1              ; Currently registered hotkey code (-1 = none)
-Int globalAIHotkey = -1             ; Global AI toggle hotkey (C++ mode only, -1 = none)
+Int globalAIHotkey = -1             ; GlobalAI toggle hotkey (registered here so burst catches visibility change)
 Bool usePapyrusHotkeys = False     ; True = Papyrus hotkeys, False = C++ hotkeys
+
+; GlobalAI state (managed by SNSGlobalAIController)
+Bool currentGlobalAIState = True   ; Current globalAI enabled state (set by controller)
+
+; Reference to the controller - used to suppress temp-poll re-registration
+; during a globalAI burst so the controller's 0.1s timer is not overwritten
+; by this widget's 3s temp-poll interval (both scripts share a VMHandle).
+SNSGlobalAIController Property GlobalAIController Auto
 
 ; Recording hotkey tracking (for hotkey-only mode)
 Int recordSpeechHotkey = -1         ; RecordSpeech hotkey
@@ -488,9 +496,9 @@ Event OnWidgetReset()
         UI.SetFloat(HUD_MENU, WidgetRoot + "._yscale", widgetSize as Float)
         UI.SetInt(HUD_MENU, WidgetRoot + "._alpha", widgetOpacity)
         
-        ; Set initial visibility (UpdateStatus will apply global AI and hide-when-inactive logic)
-        UI.InvokeBool(HUD_MENU, WidgetRoot + ".setVisible", widgetVisible)
-        Debug.Trace("[SNSWhisperWidget] Initial visibility set to: " + widgetVisible)
+        ; Set visibility based on current globalAI state (set by controller) + auto-hide rules
+        ; Controller has already synced currentGlobalAIState in its OnInit
+        UpdateVisibilityFromState()
         
         ; Don't restore cached states - whisper mode resets to OFF on reload
         ; SkyrimNet always resets whisper mode to disabled, so cached state would be wrong
@@ -651,7 +659,7 @@ Function UnregisterRecordingHotkeys()
     EndIf
 EndFunction
 
-; Detects and registers the whisper mode toggle hotkey
+; Detects and registers the whisper mode toggle hotkey and globalAI hotkey
 ; Supports both C++ hotkeys (from config file) and Papyrus hotkeys (from quest)
 ; Automatically converts C++ VK codes to Skyrim scan codes
 Function LoadHotkeyFromConfig()
@@ -667,41 +675,31 @@ Function LoadHotkeyFromConfig()
             skynet_Library libraryScript = SkyrimNetLibraryQuest as skynet_Library
             If libraryScript
                 newHotkey = libraryScript.hotkeyToggleWhisperMode
-                ; Global AI hotkey only available in Papyrus mode if exposed
             EndIf
         EndIf
     Else
         ; C++ system: Read VK code from config and convert to Skyrim code
         Int directInputKey = SkyrimNetApi.GetConfigInt("hotkey", "toggleWhisperMode", -1)
         newHotkey = ConvertVKInputToSkyrim(directInputKey)
-        
-        ; Also load global AI hotkey (C++ only)
-        Int globalAIKey = SkyrimNetApi.GetConfigInt("hotkey", "toggleGlobalAI", -1)
-        newGlobalAIHotkey = ConvertVKInputToSkyrim(globalAIKey)
+        newGlobalAIHotkey = ConvertVKInputToSkyrim(SkyrimNetApi.GetConfigInt("hotkey", "toggleGlobalAI", -1))
     EndIf
     
     ; Re-register whisper hotkey if it changed
     If newHotkey != whisperHotkey
-        ; Unregister old hotkey
         If whisperHotkey != -1
             UnregisterForKey(whisperHotkey)
         EndIf
-        
-        ; Register new hotkey
         whisperHotkey = newHotkey
         If whisperHotkey != -1
             RegisterForKey(whisperHotkey)
         EndIf
     EndIf
-    
-    ; Re-register global AI hotkey if it changed
+
+    ; Re-register globalAI hotkey if it changed
     If newGlobalAIHotkey != globalAIHotkey
-        ; Unregister old hotkey
         If globalAIHotkey != -1
             UnregisterForKey(globalAIHotkey)
         EndIf
-        
-        ; Register new hotkey
         globalAIHotkey = newGlobalAIHotkey
         If globalAIHotkey != -1
             RegisterForKey(globalAIHotkey)
@@ -716,7 +714,12 @@ EndFunction
 ; Handles hotkey press for instant widget update
 ; Called when registered hotkey is pressed
 Event OnKeyDown(Int keyCode)
-    If keyCode == whisperHotkey
+    If keyCode == globalAIHotkey && !Utility.IsInMenuMode()
+        ; GlobalAI hotkey: start burst polling to catch visibility change
+        burstPollCount = 0
+        tempPollCount = maxTempPolls  ; Stop any temp polling
+        RegisterForSingleUpdate(0.1)
+    ElseIf keyCode == whisperHotkey
         ; Start burst polling to catch config update
         ; Polls at 0.1s intervals for up to 0.4s total (4 polls)
         ; Process even in menu mode (e.g., typing in search fields)
@@ -725,13 +728,7 @@ Event OnKeyDown(Int keyCode)
         RegisterForSingleUpdate(0.1)
         
     ElseIf !Utility.IsInMenuMode()
-        If keyCode == globalAIHotkey && globalAIHotkey != -1
-            ; Global AI toggled (C++ mode only): start burst polling
-            burstPollCount = 0
-            tempPollCount = maxTempPolls  ; Stop any temp polling
-            RegisterForSingleUpdate(0.1)
-            
-        ElseIf bUseHotkeyMode && bShowRecordingIndicator && IsRecordingHotkey(keyCode)
+        If bUseHotkeyMode && bShowRecordingIndicator && IsRecordingHotkey(keyCode)
             ; Track which key is pressed
             If keyCode == recordSpeechHotkey
                 recordSpeechPressed = True
@@ -809,8 +806,11 @@ Event OnUpdate()
         burstPollCount += 1
         If burstPollCount < maxBurstPolls
             RegisterForSingleUpdate(0.1)  ; Quick 0.1s interval for burst
+            Return  ; More burst polls pending
         EndIf
-        Return
+        ; Last burst poll - fall through to temp polling below.
+        ; If tempPollCount was reset to 0 by globalAI hotkey, temp polling
+        ; will schedule itself as a backstop for late C++ commits.
     EndIf
     
     ; Priority 2: Normal polling or temp post-reload polling
@@ -825,29 +825,25 @@ Event OnUpdate()
         RegisterForSingleUpdate(fPollInterval)
     Else
         ; Hotkey mode: temporary post-reload polling only
-        ; Keep polling until BOTH poll count reached AND widget is Ready
-        ; This prevents stopping temp polling before SWF has finished loading
-        ; But timeout after 1 minute to prevent infinite polling
         If (tempPollCount < maxTempPolls || !Ready) && tempPollCount < maxTimeoutPolls
             UpdateStatus()
             tempPollCount += 1
-            RegisterForSingleUpdate(fTempPollInterval)
+            ; Only re-register if the controller is NOT running a burst.
+            ; Controller shares our VMHandle - if we register 3s while it wants 0.1s,
+            ; our call would win (last write wins) and slow the burst to 3s intervals.
+            If !GlobalAIController || !GlobalAIController.IsBursting()
+                RegisterForSingleUpdate(fTempPollInterval)
+            EndIf
             
-            ; Log if we're extending polling due to Ready=False
             If tempPollCount >= maxTempPolls && !Ready
                 Debug.Trace("[SNSWhisperWidget] Extending temp polling, Ready=False (poll " + tempPollCount + ")")
             EndIf
         Else
-            ; Check if we timed out
-            If !Ready && tempPollCount >= maxTimeoutPolls
-                Debug.Trace("[SNSWhisperWidget] ERROR: Temp polling timed out after " + tempPollCount + " polls, Ready=False!")
-                tempPollingTimedOut = True
-            Else
-                ; Temp polling complete
-                Debug.Trace("[SNSWhisperWidget] Temp polling complete after " + tempPollCount + " polls, Ready=True")
-            EndIf
+            ; Temp polling complete - hotkey mode has no background polling.
+            ; Whisper/recording changes are detected via hotkey burst polls.
+            ; OnMenuClose provides a backstop for any missed changes.
+            Debug.Trace("[SNSWhisperWidget] Temp polling complete - hotkey mode, no further background polling")
         EndIf
-        ; After temp polls complete, stop all polling - everything is hotkey-driven
     EndIf
 EndEvent
 
@@ -855,30 +851,16 @@ EndEvent
 ; STATE UPDATE FUNCTIONS
 ;===========================================
 
-; Lightweight check for global AI state
-; Used in hotkey mode to ensure widget hides when SkyrimNet is disabled
-; without the overhead of full state polling
-Function CheckGlobalAIState()
-    Bool isGlobalAIEnabled = SkyrimNetApi.GetConfigBool("game", "general.globalAIEnabled", True)
-    
-    If !isGlobalAIEnabled
-        ; Global AI disabled - hide widget
-        If Ready
-            UI.InvokeBool(HUD_MENU, WidgetRoot + ".setVisible", false)
-        EndIf
-    Else
-        ; Global AI enabled - do full update to restore state
-        UpdateStatus(true)
-    EndIf
-EndFunction
-
-; Full status update - checks both whisper mode AND recording state
-; Called on game load and when settings change
-; More expensive than UpdateWhisperMode() due to checking both states
+; Checks whisper mode, recording state, AND globalAI - updates icons and visibility
 Function UpdateStatus(Bool forceUpdate = false)
-    ; Check if SkyrimNet global AI is enabled
+    ; Check globalAI directly - don't rely solely on controller calling SetGlobalAIVisibility
     Bool isGlobalAIEnabled = SkyrimNetApi.GetConfigBool("game", "general.globalAIEnabled", True)
-    
+    Bool globalAIChanged = (isGlobalAIEnabled != currentGlobalAIState)
+    If globalAIChanged
+        Debug.Trace("[SNSWhisperWidget] UpdateStatus detected globalAI change: " + currentGlobalAIState + " -> " + isGlobalAIEnabled)
+        currentGlobalAIState = isGlobalAIEnabled
+    EndIf
+
     ; Query current states from SkyrimNet
     Bool isWhisperOn = IsWhisperModeEnabled()
     Bool isRecording = False
@@ -888,9 +870,69 @@ Function UpdateStatus(Bool forceUpdate = false)
         isRecording = SkyrimNetApi.IsRecordingInput()
     EndIf
     
-    ; Calculate visibility: start with base visibility, apply global AI and auto-hide logic
-    Bool shouldBeVisible = widgetVisible && isGlobalAIEnabled
+    Bool whisperChanged = (isWhisperOn != lastWhisperState)
+    Bool recordingChanged = (isRecording != lastRecordingState)
+    Bool stateChanged = whisperChanged || recordingChanged
+    Bool becomingVisible = (!lastWhisperState && !lastRecordingState) && (isWhisperOn || isRecording)
+    
+    ; Update UI only if state changed or becoming visible
+    If (forceUpdate || stateChanged || becomingVisible) && Ready
+        ; Send updates to Flash widget
+        ; Only show recording if the feature is enabled
+        Bool showRecording = isRecording && bShowRecordingIndicator
+        UI.InvokeBool(HUD_MENU, WidgetRoot + ".setWhisperMode", isWhisperOn)
+        UI.InvokeBool(HUD_MENU, WidgetRoot + ".setRecording", showRecording)
+        
+        lastWhisperState = isWhisperOn
+        lastRecordingState = isRecording
+    EndIf
+
+    ; Update visibility whenever globalAI changed, or when whisper/recording changed with auto-hide
+    If (forceUpdate || globalAIChanged || stateChanged) && Ready
+        UpdateVisibilityFromState()
+    EndIf
+EndFunction
+
+; Called by SNSGlobalAIController when globalAI state changes
+; Immediately updates visibility based on new globalAI state
+Function SetGlobalAIVisibility(Bool isGlobalAIEnabled)
+    currentGlobalAIState = isGlobalAIEnabled
+    Debug.Trace("[SNSWhisperWidget] SetGlobalAIVisibility(" + isGlobalAIEnabled + ") - Ready: " + Ready + ", widgetVisible: " + widgetVisible)
+    
+    If !Ready
+        Debug.Trace("[SNSWhisperWidget] SetGlobalAIVisibility - widget not Ready yet, returning")
+        Return
+    EndIf
+    
+    ; Fast path: no auto-hide rules, just set visibility directly
+    If !bHideWhenInactive
+        Bool shouldBeVisible = widgetVisible && currentGlobalAIState
+        Debug.Trace("[SNSWhisperWidget] Fast path - setting visibility to " + shouldBeVisible)
+        UI.InvokeBool(HUD_MENU, WidgetRoot + ".setVisible", shouldBeVisible)
+        Return
+    EndIf
+    
+    ; Slow path: need to query whisper/recording state for auto-hide rules
+    Debug.Trace("[SNSWhisperWidget] Slow path - calling UpdateVisibilityFromState()")
+    UpdateVisibilityFromState()
+EndFunction
+
+; Recalculates and updates visibility based on current states
+; Called by: SetGlobalAIVisibility (globalAI change) and UpdateStatus (whisper/recording change with auto-hide)
+Function UpdateVisibilityFromState()
+    If !Ready
+        Debug.Trace("[SNSWhisperWidget] UpdateVisibilityFromState - widget not Ready yet")
+        Return
+    EndIf
+    
+    Bool shouldBeVisible = widgetVisible && currentGlobalAIState
     If shouldBeVisible && bHideWhenInactive
+        Bool isWhisperOn = IsWhisperModeEnabled()
+        Bool isRecording = False
+        If bShowRecordingIndicator
+            isRecording = SkyrimNetApi.IsRecordingInput()
+        EndIf
+        
         If bShowRecordingIndicator
             ; Consider both whisper and recording for auto-hide
             If !isWhisperOn && !isRecording
@@ -904,44 +946,8 @@ Function UpdateStatus(Bool forceUpdate = false)
         EndIf
     EndIf
     
-    ; When forcing update, skip change detection entirely
-    If forceUpdate
-        lastGlobalAIState = isGlobalAIEnabled
-        ; Always update UI to match actual state
-        ; Only show recording if the feature is enabled
-        Bool showRecording = isRecording && bShowRecordingIndicator
-        UI.InvokeBool(HUD_MENU, WidgetRoot + ".setWhisperMode", isWhisperOn)
-        UI.InvokeBool(HUD_MENU, WidgetRoot + ".setRecording", showRecording)
-        UI.InvokeBool(HUD_MENU, WidgetRoot + ".setVisible", shouldBeVisible)
-        
-        ; Update cached states
-        lastWhisperState = isWhisperOn
-        lastRecordingState = isRecording
-        Return
-    EndIf
-    
-    ; Normal operation: detect state changes
-    Bool globalAIChanged = (isGlobalAIEnabled != lastGlobalAIState)
-    lastGlobalAIState = isGlobalAIEnabled
-    
-    Bool stateChanged = globalAIChanged || (isWhisperOn != lastWhisperState || isRecording != lastRecordingState)
-    Bool becomingVisible = (!lastWhisperState && !lastRecordingState) && (isWhisperOn || isRecording)
-    
-    ; Update UI only if state changed or becoming visible
-    If stateChanged || becomingVisible
-        If (Ready)
-            ; Send updates to Flash widget
-            ; Only show recording if the feature is enabled
-            Bool showRecording = isRecording && bShowRecordingIndicator
-            UI.InvokeBool(HUD_MENU, WidgetRoot + ".setWhisperMode", isWhisperOn)
-            UI.InvokeBool(HUD_MENU, WidgetRoot + ".setRecording", showRecording)
-            UI.InvokeBool(HUD_MENU, WidgetRoot + ".setVisible", shouldBeVisible)
-            
-            ; Only update cached states if UI update succeeded
-            lastWhisperState = isWhisperOn
-            lastRecordingState = isRecording
-        EndIf
-    EndIf
+    Debug.Trace("[SNSWhisperWidget] UpdateVisibilityFromState - widgetVisible:" + widgetVisible + " globalAI:" + currentGlobalAIState + " => shouldBeVisible:" + shouldBeVisible)
+    UI.InvokeBool(HUD_MENU, WidgetRoot + ".setVisible", shouldBeVisible)
 EndFunction
 
 ; Fast update for hotkey press - only checks whisper mode

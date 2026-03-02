@@ -7,3 +7,5 @@ interface/exported/widgets/WhisperModeWidget - Copy.swf
 SkyrimNetStatusWidget-v1.0.zip
 SkyrimNetStatusWidget-v1.0.1.zip
 SkyrimNetStatusWidget-v1.1.zip
+action scripts/gm widget.txt
+action scripts/whisper widget.txt

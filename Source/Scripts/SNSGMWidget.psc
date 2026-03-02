@@ -24,8 +24,16 @@ Bool lastGlobalAIState = True      ; Last known global AI state
 ; Hotkey management
 Int gmHotkey = -1                  ; Toggle GM mode hotkey
 Int continuousHotkey = -1          ; Toggle continuous mode hotkey
-Int globalAIHotkey = -1            ; Global AI toggle hotkey (C++ mode only, -1 = none)
+Int globalAIHotkey = -1            ; Toggle global AI hotkey (registered here so burst polling catches visibility change)
 Bool usePapyrusHotkeys = False     ; True = Papyrus hotkeys, False = C++ hotkeys
+
+; GlobalAI state (managed by SNSGlobalAIController)
+Bool currentGlobalAIState = True   ; Current globalAI enabled state (set by controller)
+
+; Reference to the controller - used to suppress temp-poll re-registration
+; during a globalAI burst so the controller's 0.1s timer is not overwritten
+; by this widget's 3s temp-poll interval (both scripts share a VMHandle).
+SNSGlobalAIController Property GlobalAIController Auto
 
 ; Burst polling when hotkey pressed
 Int burstPollCount = 0             ; Counter for burst polls after key press
@@ -150,9 +158,7 @@ Bool Property UseHotkeyMode
             If !bUseHotkeyMode
                 ; Switching to polling mode - start polling
                 RegisterForSingleUpdate(fPollInterval)
-            Else
-                ; Switching to hotkey mode - start background global AI checks
-                RegisterForSingleUpdate(fPollInterval)
+            ; Else: hotkey mode - no background polling, OnKeyDown drives updates
             EndIf
         EndIf
     EndFunction
@@ -166,7 +172,7 @@ Float Property PollInterval
     
     Function Set(Float a_val)
         fPollInterval = a_val
-        If (Ready)
+        If (Ready && !bUseHotkeyMode)
             UnregisterForUpdate()
             RegisterForSingleUpdate(fPollInterval)
         EndIf
@@ -231,10 +237,12 @@ Event OnWidgetReset()
     ; Reset temp polling counter (but NOT burstPollCount - that's only for hotkeys)
     tempPollCount = 0
     
-    ; Load hotkeys (in case OnGameReload didn't fire)
-    LoadHotkeysFromConfig()
-    
     Parent.OnWidgetReset()
+    
+    ; Load hotkeys AFTER parent reset - Parent.OnWidgetReset() calls UnregisterForAllKeys()
+    ; internally, so any keys registered before the parent call get wiped.
+    ; Calling LoadHotkeysFromConfig() here ensures keys survive the parent reset.
+    LoadHotkeysFromConfig()
         
     ; Apply saved settings to the Flash widget
     If (Ready)
@@ -244,22 +252,35 @@ Event OnWidgetReset()
         UI.SetFloat(HUD_MENU, WidgetRoot + "._yscale", widgetSize as Float)
         UI.SetInt(HUD_MENU, WidgetRoot + "._alpha", widgetOpacity)
         
-        ; Set initial visibility (UpdateStatus will apply global AI and hide-when-inactive logic)
-        UI.InvokeBool(HUD_MENU, WidgetRoot + ".setVisible", widgetVisible)
-        Debug.Trace("[SNSGMWidget] Initial visibility set to: " + widgetVisible)
-        
         ; Restore last known icon states to prevent flash of default OFF state
         ; Cached states are usually correct (persisted from before reload)
         ; Forced updates will correct them within 1-2 seconds if SkyrimNet state changed
         UI.InvokeBool(HUD_MENU, WidgetRoot + ".setGMMode", lastGMState)
         UI.InvokeBool(HUD_MENU, WidgetRoot + ".setContinuous", lastContinuousState)
         Debug.Trace("[SNSGMWidget] Restored cached states - GM:" + lastGMState + " Continuous:" + lastContinuousState)
+        
+        ; Set visibility based on current globalAI state (set by controller) + auto-hide rules
+        ; Controller has already synced currentGlobalAIState in its OnInit
+        UpdateVisibilityFromState()
     Else
         Debug.Trace("[SNSGMWidget] WARNING: Ready=False in OnWidgetReset!")
     EndIf
     
-    ; Listen for load screen closing to refresh state after load
+    ; Register for menus so OnMenuClose can force-sync state after any game interaction.
+    ; This mirrors the whisper widget's backstop and is the primary mechanism for
+    ; catching globalAI state changes that happened while no menus were open.
     RegisterForMenu("LoadingMenu")
+    RegisterForMenu("Dialogue Menu")
+    RegisterForMenu("ContainerMenu")
+    RegisterForMenu("InventoryMenu")
+    RegisterForMenu("MagicMenu")
+    RegisterForMenu("BarterMenu")
+    RegisterForMenu("GiftMenu")
+    RegisterForMenu("JournalMenu")
+    RegisterForMenu("MapMenu")
+    RegisterForMenu("FavoritesMenu")
+    RegisterForMenu("Console")
+    RegisterForMenu("CustomMenu")
     
     ; Always start initial polling after reset to establish state
     ; In hotkey mode, this will poll a few times then stop
@@ -268,6 +289,16 @@ Event OnWidgetReset()
         tempPollCount = 0  ; Reset temp poll counter
     EndIf
     RegisterForSingleUpdate(fTempPollInterval)
+EndEvent
+
+; Called when a registered menu closes.
+; Force-syncs widget state to catch any globalAI or GM state changes that
+; occurred since the last update (burst polling may have missed them if C++
+; committed after the 0.4s burst window). Matches whisper widget behaviour.
+Event OnMenuClose(String menuName)
+    If Ready
+        UpdateStatus(true)
+    EndIf
 EndEvent
 
 ;===========================================
@@ -288,19 +319,11 @@ EndFunction
 ; EVENT HANDLERS
 ;===========================================
 
-; Handles hotkey presses for GM and continuous mode toggles
+; Handles hotkey presses for GM, continuous mode, and globalAI toggles
 Event OnKeyDown(Int keyCode)
     If !Utility.IsInMenuMode()
-        If keyCode == gmHotkey
-            ; GM hotkey: start burst polling
-            burstPollCount = 0
-            RegisterForSingleUpdate(0.1)
-        ElseIf keyCode == continuousHotkey
-            ; Continuous hotkey: start burst polling
-            burstPollCount = 0
-            RegisterForSingleUpdate(0.1)
-        ElseIf keyCode == globalAIHotkey && globalAIHotkey != -1
-            ; Global AI hotkey: start burst polling
+        If keyCode == gmHotkey || keyCode == continuousHotkey || keyCode == globalAIHotkey
+            ; Start burst polling to catch the config state change
             burstPollCount = 0
             RegisterForSingleUpdate(0.1)
         EndIf
@@ -312,12 +335,13 @@ Event OnUpdate()
     Debug.Trace("[SNSGMWidget] OnUpdate() called - burstPollCount=" + burstPollCount + ", tempPollCount=" + tempPollCount + ", bUseHotkeyMode=" + bUseHotkeyMode)
     ; Priority 1: Burst polling after hotkey press
     If burstPollCount < maxBurstPolls
-        UpdateStatus()  ; Check all states
+        UpdateStatus()  ; Check all states — non-force path detects globalAI change
         burstPollCount += 1
         If burstPollCount < maxBurstPolls
             RegisterForSingleUpdate(0.1)  ; Quick 0.1s interval for burst
+            Return  ; More burst polls pending
         EndIf
-        Return
+        ; Last burst poll - fall through to temp polling below.
     EndIf
     
     ; Reset burst counter so it doesn't interfere with other polling modes
@@ -335,33 +359,28 @@ Event OnUpdate()
         EndIf
         RegisterForSingleUpdate(fPollInterval)
     Else
-        ; Hotkey mode: temporary post-reset polling only
-        ; Keep polling until BOTH poll count reached AND widget is Ready
-        ; This prevents stopping temp polling before SWF has finished loading
-        ; But timeout after 1 minute to prevent infinite polling
+        ; Hotkey mode: temporary post-reset polling
         If (tempPollCount < maxTempPolls || !Ready) && tempPollCount < maxTimeoutPolls
-            ; Force update on first poll to ensure UI matches state even if no change detected
-            Bool forceFirst = (tempPollCount == 0)
-            Debug.Trace("[SNSGMWidget] Temp poll #" + tempPollCount + ", forceFirst=" + forceFirst + ", Ready=" + Ready)
-            UpdateStatus(forceFirst)
+            ; Normal post-reset temp polling (count-based).
+            Debug.Trace("[SNSGMWidget] Temp poll #" + tempPollCount + ", Ready=" + Ready)
+            UpdateStatus()
             tempPollCount += 1
-            RegisterForSingleUpdate(fTempPollInterval)
+            ; Only re-register if the controller is NOT running a burst.
+            ; Controller shares our VMHandle - if we register 3s while it wants 0.1s,
+            ; our call would win (last write wins) and slow the burst to 3s intervals.
+            If !GlobalAIController || !GlobalAIController.IsBursting()
+                RegisterForSingleUpdate(fTempPollInterval)
+            EndIf
             
-            ; Log if we're extending polling due to Ready=False
             If tempPollCount >= maxTempPolls && !Ready
                 Debug.Trace("[SNSGMWidget] Extending temp polling, Ready=False (poll " + tempPollCount + ")")
             EndIf
         Else
-            ; Check if we timed out
-            If !Ready && tempPollCount >= maxTimeoutPolls
-                Debug.Trace("[SNSGMWidget] ERROR: Temp polling timed out after " + tempPollCount + " polls, Ready=False!")
-                tempPollingTimedOut = True
-            Else
-                ; Temp polling complete
-                Debug.Trace("[SNSGMWidget] Temp polling complete after " + tempPollCount + " polls, Ready=True")
-            EndIf
+            ; Temp polling complete - hotkey mode has no background polling.
+            ; GM/continuous changes are detected via hotkey burst polls.
+            ; OnMenuClose provides a backstop for any missed changes.
+            Debug.Trace("[SNSGMWidget] Temp polling complete - hotkey mode, no further background polling")
         EndIf
-        ; After temp polls complete, stop all polling - everything is hotkey-driven
     EndIf
 EndEvent
 
@@ -369,85 +388,91 @@ EndEvent
 ; STATE UPDATE FUNCTIONS
 ;===========================================
 
-; Lightweight check for global AI state
-; Used in hotkey mode to ensure widget hides when SkyrimNet is disabled
-; without the overhead of full state polling
-Function CheckGlobalAIState()
-    Bool isGlobalAIEnabled = SkyrimNetApi.GetConfigBool("game", "general.globalAIEnabled", True)
-    
-    If !isGlobalAIEnabled
-        ; Global AI disabled - hide widget
-        If Ready
-            UI.InvokeBool(HUD_MENU, WidgetRoot + ".setVisible", false)
-        EndIf
-    Else
-        ; Global AI enabled - do full update to restore state
-        UpdateStatus(true)
-    EndIf
-EndFunction
-
-; Full status update - checks both GM mode AND continuous mode state
+; Checks GM mode, continuous mode, AND globalAI state - updates icons and visibility
 Function UpdateStatus(Bool forceUpdate = false)
-    ; Check if SkyrimNet global AI is enabled
+    ; Check globalAI directly - don't rely solely on controller calling SetGlobalAIVisibility
     Bool isGlobalAIEnabled = SkyrimNetApi.GetConfigBool("game", "general.globalAIEnabled", True)
-    
-    ; Query current states from SkyrimNet
+    Bool globalAIChanged = (isGlobalAIEnabled != currentGlobalAIState)
+    If globalAIChanged
+        Debug.Trace("[SNSGMWidget] UpdateStatus detected globalAI change: " + currentGlobalAIState + " -> " + isGlobalAIEnabled)
+        currentGlobalAIState = isGlobalAIEnabled
+    EndIf
+
+    ; Query current GM/continuous states from SkyrimNet
     Bool isGMEnabled = IsGMAgentEnabled()
     Bool isContinuous = False
-        
-    ; Check continuous mode if feature is enabled OR if forcing update
-    ; Continuous mode indicator only makes sense when GameMaster is enabled
     If (bShowContinuousIndicator || forceUpdate) && isGMEnabled
         isContinuous = IsContinuousModeEnabled()
     EndIf
+
+    Bool gmChanged = (isGMEnabled != lastGMState)
+    Bool continuousChanged = (isContinuous != lastContinuousState)
+
+    If (forceUpdate || gmChanged || continuousChanged) && Ready
+        Debug.Trace("[SNSGMWidget] Icon update - GM:" + isGMEnabled + " Continuous:" + isContinuous)
+        UI.InvokeBool(HUD_MENU, WidgetRoot + ".setGMMode", isGMEnabled)
+        UI.InvokeBool(HUD_MENU, WidgetRoot + ".setContinuous", isContinuous)
+        lastGMState = isGMEnabled
+        lastContinuousState = isContinuous
+    EndIf
+
+    ; Update visibility whenever globalAI changed, or when GM/continuous changed with auto-hide
+    If (forceUpdate || globalAIChanged || gmChanged || continuousChanged) && Ready
+        UpdateVisibilityFromState()
+    EndIf
+EndFunction
+
+; Called by SNSGlobalAIController when globalAI state changes
+; Immediately updates visibility based on new globalAI state
+Function SetGlobalAIVisibility(Bool isGlobalAIEnabled)
+    currentGlobalAIState = isGlobalAIEnabled
+    Debug.Trace("[SNSGMWidget] SetGlobalAIVisibility(" + isGlobalAIEnabled + ") - Ready: " + Ready + ", widgetVisible: " + widgetVisible)
     
-    ; Calculate visibility: start with base visibility, apply global AI and auto-hide logic
-    Bool shouldBeVisible = widgetVisible && isGlobalAIEnabled
+    If !Ready
+        Debug.Trace("[SNSGMWidget] SetGlobalAIVisibility - widget not Ready yet, returning")
+        Return
+    EndIf
+    
+    ; Fast path: no auto-hide rules, just set visibility directly
+    If !bHideWhenInactive && !bOnlyShowWhenContinuous
+        Bool shouldBeVisible = widgetVisible && currentGlobalAIState
+        Debug.Trace("[SNSGMWidget] Fast path - setting visibility to " + shouldBeVisible)
+        UI.InvokeBool(HUD_MENU, WidgetRoot + ".setVisible", shouldBeVisible)
+        Return
+    EndIf
+    
+    ; Slow path: need to query GM/continuous state for auto-hide rules
+    Debug.Trace("[SNSGMWidget] Slow path - calling UpdateVisibilityFromState()")
+    UpdateVisibilityFromState()
+EndFunction
+
+; Recalculates and updates visibility based on current states
+; Called by: SetGlobalAIVisibility (globalAI change) and UpdateStatus (GM/continuous change with auto-hide)
+Function UpdateVisibilityFromState()
+    If !Ready
+        Debug.Trace("[SNSGMWidget] UpdateVisibilityFromState - widget not Ready yet")
+        Return
+    EndIf
+    
+    Bool isGMEnabled = IsGMAgentEnabled()
+    Bool isContinuous = False
+    If bShowContinuousIndicator && isGMEnabled
+        isContinuous = IsContinuousModeEnabled()
+    EndIf
+    
+    Bool shouldBeVisible = widgetVisible && currentGlobalAIState
     If shouldBeVisible && bOnlyShowWhenContinuous
-        ; Only show when both GM and continuous are enabled
         If !isGMEnabled || !isContinuous
             shouldBeVisible = false
         EndIf
     ElseIf shouldBeVisible && bHideWhenInactive
-        ; Hide if GameMaster is disabled
         If !isGMEnabled
             shouldBeVisible = false
         EndIf
     EndIf
     
-    ; When forcing update, skip change detection entirely
-    If forceUpdate
-        Debug.Trace("[SNSGMWidget] Force update - GM:" + isGMEnabled + " Continuous:" + isContinuous + " Visible:" + shouldBeVisible + " Ready:" + Ready)
-        lastGlobalAIState = isGlobalAIEnabled
-        ; Always update UI to match actual state
-        Debug.Trace("[SNSGMWidget] Setting GM icon to: " + isGMEnabled)
-        UI.InvokeBool(HUD_MENU, WidgetRoot + ".setGMMode", isGMEnabled)
-        UI.InvokeBool(HUD_MENU, WidgetRoot + ".setContinuous", isContinuous)
-        UI.InvokeBool(HUD_MENU, WidgetRoot + ".setVisible", shouldBeVisible)
-        
-        ; Update cached states
-        lastGMState = isGMEnabled
-        lastContinuousState = isContinuous
-        Return
-    EndIf
-    
-    ; Normal operation: detect state changes
-    Bool globalAIChanged = (isGlobalAIEnabled != lastGlobalAIState)
-    lastGlobalAIState = isGlobalAIEnabled
-    
-    Bool stateChanged = globalAIChanged || (isGMEnabled != lastGMState || isContinuous != lastContinuousState)
-    
-    ; Only update UI if state actually changed
-    If stateChanged && Ready
-        Debug.Trace("[SNSGMWidget] State changed - Setting GM icon to: " + isGMEnabled + " (was: " + lastGMState + ")")
-        UI.InvokeBool(HUD_MENU, WidgetRoot + ".setGMMode", isGMEnabled)
-        UI.InvokeBool(HUD_MENU, WidgetRoot + ".setContinuous", isContinuous)
-        UI.InvokeBool(HUD_MENU, WidgetRoot + ".setVisible", shouldBeVisible)
-        
-        ; Update cached states
-        lastGMState = isGMEnabled
-        lastContinuousState = isContinuous
-    EndIf
+    Debug.Trace("[SNSGMWidget] UpdateVisibilityFromState - widgetVisible:" + widgetVisible + " globalAI:" + currentGlobalAIState + " GM:" + isGMEnabled + " continuous:" + isContinuous + " => shouldBeVisible:" + shouldBeVisible)
+    UI.InvokeBool(HUD_MENU, WidgetRoot + ".setVisible", shouldBeVisible)
 EndFunction
 
 ; Fast update for GM hotkey press - only checks GM mode
@@ -616,42 +641,150 @@ Function LoadHotkeysFromConfig()
     If globalAIHotkey != -1
         RegisterForKey(globalAIHotkey)
     EndIf
+    
+    Debug.Trace("[SNSGMWidget] LoadHotkeysFromConfig complete - usePapyrus:" + usePapyrusHotkeys + " gmHotkey:" + gmHotkey + " continuousHotkey:" + continuousHotkey + " globalAIHotkey:" + globalAIHotkey)
 EndFunction
 
 ; Converts Windows Virtual Key codes to Skyrim DirectInput scan codes
-; Matches the whisper widget's conversion function
+; Uses full per-letter lookup table (letters are non-sequential in DirectInput)
 ; Returns: Skyrim key code, or -1 if unsupported
 Int Function ConvertVKToSkyrim(Int vkCode)
-    ; Common number keys 0-9
     If vkCode == 48
         Return 11  ; 0
     ElseIf vkCode >= 49 && vkCode <= 57
-        Return vkCode - 48 + 2  ; 1-9 mapped to 2-10
-    EndIf
-    
-    ; Letters A-Z (VK 0x41-0x5A / 65-90)
-    If vkCode >= 65 && vkCode <= 90
-        Return vkCode - 65 + 30  ; A=30, B=48, etc.
-    EndIf
-    
-    ; Function keys F1-F12
-    If vkCode >= 112 && vkCode <= 123
-        Return vkCode - 112 + 59  ; F1=59, F12=88
-    EndIf
-    
-    ; Common special keys
-    If vkCode == 32  ; Space
-        Return 57
-    ElseIf vkCode == 13  ; Enter
-        Return 28
-    ElseIf vkCode == 9   ; Tab
-        Return 15
-    ElseIf vkCode == 16  ; Shift
-        Return 42
-    ElseIf vkCode == 17  ; Ctrl
-        Return 29
-    ElseIf vkCode == 18  ; Alt
-        Return 56
+        Return vkCode - 47  ; 1-9
+    ElseIf vkCode == 65
+        Return 30  ; A
+    ElseIf vkCode == 66
+        Return 48  ; B
+    ElseIf vkCode == 67
+        Return 46  ; C
+    ElseIf vkCode == 68
+        Return 32  ; D
+    ElseIf vkCode == 69
+        Return 18  ; E
+    ElseIf vkCode == 70
+        Return 33  ; F
+    ElseIf vkCode == 71
+        Return 34  ; G
+    ElseIf vkCode == 72
+        Return 35  ; H
+    ElseIf vkCode == 73
+        Return 23  ; I
+    ElseIf vkCode == 74
+        Return 36  ; J
+    ElseIf vkCode == 75
+        Return 37  ; K
+    ElseIf vkCode == 76
+        Return 38  ; L
+    ElseIf vkCode == 77
+        Return 50  ; M
+    ElseIf vkCode == 78
+        Return 49  ; N
+    ElseIf vkCode == 79
+        Return 24  ; O
+    ElseIf vkCode == 80
+        Return 25  ; P
+    ElseIf vkCode == 81
+        Return 16  ; Q
+    ElseIf vkCode == 82
+        Return 19  ; R
+    ElseIf vkCode == 83
+        Return 31  ; S
+    ElseIf vkCode == 84
+        Return 20  ; T
+    ElseIf vkCode == 85
+        Return 22  ; U
+    ElseIf vkCode == 86
+        Return 47  ; V
+    ElseIf vkCode == 87
+        Return 17  ; W
+    ElseIf vkCode == 88
+        Return 45  ; X
+    ElseIf vkCode == 89
+        Return 21  ; Y
+    ElseIf vkCode == 90
+        Return 44  ; Z
+    ElseIf vkCode >= 112 && vkCode <= 123
+        Return vkCode - 53  ; F1-F12 -> 59-70
+    ElseIf vkCode == 27
+        Return 1   ; ESC
+    ElseIf vkCode == 32
+        Return 57  ; Space
+    ElseIf vkCode == 13
+        Return 28  ; Enter
+    ElseIf vkCode == 9
+        Return 15  ; Tab
+    ElseIf vkCode == 8
+        Return 14  ; Backspace
+    ElseIf vkCode == 16
+        Return 42  ; Shift
+    ElseIf vkCode == 17
+        Return 29  ; Ctrl
+    ElseIf vkCode == 18
+        Return 56  ; Alt
+    ElseIf vkCode == 189
+        Return 12  ; -
+    ElseIf vkCode == 187
+        Return 13  ; =
+    ElseIf vkCode == 219
+        Return 26  ; [
+    ElseIf vkCode == 221
+        Return 27  ; ]
+    ElseIf vkCode == 186
+        Return 39  ; ;
+    ElseIf vkCode == 222
+        Return 40  ; '
+    ElseIf vkCode == 188
+        Return 51  ; ,
+    ElseIf vkCode == 190
+        Return 52  ; .
+    ElseIf vkCode == 191
+        Return 53  ; /
+    ElseIf vkCode == 220
+        Return 43  ; \
+    ElseIf vkCode == 192
+        Return 41  ; `
+    ElseIf vkCode == 38
+        Return 200  ; Up
+    ElseIf vkCode == 37
+        Return 203  ; Left
+    ElseIf vkCode == 39
+        Return 205  ; Right
+    ElseIf vkCode == 40
+        Return 208  ; Down
+    ElseIf vkCode == 45
+        Return 210  ; Insert
+    ElseIf vkCode == 46
+        Return 211  ; Delete
+    ElseIf vkCode == 36
+        Return 199  ; Home
+    ElseIf vkCode == 35
+        Return 207  ; End
+    ElseIf vkCode == 33
+        Return 201  ; Page Up
+    ElseIf vkCode == 34
+        Return 209  ; Page Down
+    ElseIf vkCode == 96
+        Return 82   ; Num 0
+    ElseIf vkCode == 97
+        Return 79   ; Num 1
+    ElseIf vkCode == 98
+        Return 80   ; Num 2
+    ElseIf vkCode == 99
+        Return 81   ; Num 3
+    ElseIf vkCode == 100
+        Return 75   ; Num 4
+    ElseIf vkCode == 101
+        Return 76   ; Num 5
+    ElseIf vkCode == 102
+        Return 77   ; Num 6
+    ElseIf vkCode == 103
+        Return 71   ; Num 7
+    ElseIf vkCode == 104
+        Return 72   ; Num 8
+    ElseIf vkCode == 105
+        Return 73   ; Num 9
     EndIf
     
     ; Unsupported or invalid
